@@ -95,15 +95,32 @@ bot.onText(/\/start/, async (msg) => {
     const welcomeMessage = `
 Welcome to the Celo Telegram Bot! 🚀
 
-Available commands:
-/balance - Check your Celo balance
-/tx_info <hash> - Get transaction information
+This bot allows you to interact with the Celo blockchain and smart contracts using natural language and commands.
+
+Basic Commands:
+/balance - Check your Celo balance (CELO and cUSD)
+/tx_info <hash> - Get detailed transaction information
 /send <amount> <address|friend> - Send CELO to an address or friend
 /send_cusd <amount> <address|friend> - Send cUSD to an address or friend
-/addfriend <name> <address> - Add a friend's address
-/removefriend <name> - Remove a friend
-/listfriends - List all your friends
-/help - Show this help message
+/addfriend <name> <address> - Add a friend's address for easy transfers
+/removefriend <name> - Remove a friend from your list
+/listfriends - List all your saved friends
+/llm <query> - Start a new conversation with the AI assistant
+/llmnext <query> - Continue an existing conversation
+
+The AI assistant can help you with:
+- Analyzing transactions and accounts
+- Understanding smart contracts
+- Checking token balances and transfers
+- Monitoring blockchain activity
+- Identifying contract types and security patterns
+
+ Smart Contract Features:
+- interact with ERC20 tokens
+- Analyze contract security and behavior
+- View contract verification status
+
+/help - Show detailed help message
     `;
     await bot.sendMessage(chatId, welcomeMessage);
 });
@@ -113,16 +130,59 @@ bot.onText(/\/help/, async (msg) => {
     logger.info(`Help requested by: ${msg.from.username || msg.from.id}`);
     
     const helpText = `
-Available commands:
-/balance - Check your Celo balance
-/tx_info <hash> - Get transaction information
-/send <amount> <address|friend> - Send CELO to an address or friend
-/send_cusd <amount> <address|friend> - Send cUSD to an address or friend
-/price - Get current CELO and cUSD prices
-/addfriend <name> <address> - Add a friend's address
-/removefriend <name> - Remove a friend
-/listfriends - List all your friends
-/help - Show this help message
+Celo Telegram Bot - Complete Guide 
+
+Basic Operations:
+/balance - Check your wallet balance
+  • Shows both CELO and cUSD balances
+  • Updates in real-time
+  • Displays in human-readable format
+
+/tx_info <hash> - Transaction details
+  • Transaction status and confirmations
+  • Gas usage and fees
+  • Value transferred
+  • Smart contract interactions
+
+/send <amount> <address|friend> - Send CELO
+  • Send to any Celo address
+  • Use friend names for easy transfers
+  • Automatic gas estimation
+  • Transaction confirmation tracking
+
+/send_cusd <amount> <address|friend> - Send cUSD
+  • Same features as CELO transfers
+  • Uses Celo's stable token contract
+  • Maintains dollar-pegged value
+
+
+Friend Management System:
+/addfriend <name> <address> - Save friend's address
+  • Easy-to-remember names
+  • Secure address storage
+  • Simplified transfers
+
+/removefriend <name> - Remove saved friend
+  • Instant removal
+  • Confirmation message
+
+/listfriends - View saved friends
+  • Shows all saved names and addresses
+  • Organized display
+
+AI Assistant Integration:
+/llm <query> - New AI conversation
+  Examples:
+  • "Analyze this contract: 0x..."
+  • "Check the latest transactions for address..."
+  • "Explain this transaction's impact..."
+  • "Is this token contract suspicious?"
+
+/llmnext <query> - Continue AI conversation
+  • Maintains context from previous queries
+  • Deep blockchain analysis
+  • Smart contract security checks
+  • Transaction pattern recognition
     `;
     await bot.sendMessage(chatId, helpText);
 });

@@ -82,22 +82,166 @@ The bot uses Winston for comprehensive logging:
 - `combined.log` contains all log messages
 - Console output is colorized for better readability
 
+## Smart Contracts
+
+The project includes several smart contracts that demonstrate different token implementations and security patterns:
+
+### LegitToken (ERC20)
+
+A legitimate ERC20 token implementation with transparent and secure features:
+- Standard ERC20 functionality with OpenZeppelin base
+- Fixed maximum supply of 1 million tokens
+- Initial supply of 100,000 tokens
+- Transparent minting with clear limits
+- Standard burn functionality
+- Public view functions for token information
+
+### SuspiciousToken (Educational Example)
+
+A demonstration contract showing common malicious patterns in token contracts (for educational purposes only):
+- Hidden admin privileges
+- Disguised fee mechanisms
+- Trading restrictions that can be manipulated
+- Backdoor functions
+- This contract serves as an educational tool to help users identify potential scam tokens
+
+### Lock Contract
+
+A simple time-lock contract that demonstrates basic Solidity patterns:
+- Time-based locking mechanism
+- Owner-only withdrawal
+- Event emission
+- Secure transfer handling
+
+## Smart Contract Development
+
+### Prerequisites
+- Hardhat development environment
+- OpenZeppelin contracts library
+- Solidity ^0.8.20
+
+### Deployment
+```bash
+npx hardhat compile
+npx hardhat deploy
+```
+
+### Testing
+```bash
+npx hardhat test
+```
+
+### Contract Verification
+The deployment script automatically verifies contracts on the Celo block explorer.
+
+## LLM Integration
+
+The bot features advanced natural language processing capabilities powered by Deepseek's LLM:
+
+### LLM Commands
+
+- `/llm <query>` - Start a new conversation with natural language query
+- `/llmnext <query>` - Continue the existing conversation with follow-up query
+
+### LLM Features
+
+1. **Blockchain Analysis**
+   - Transaction pattern recognition
+   - Smart contract code analysis
+   - Token behavior assessment
+   - Address activity monitoring
+
+2. **Natural Language Understanding**
+   - Understands complex queries about blockchain state
+   - Interprets user intentions for blockchain operations
+   - Provides context-aware responses
+   - Maintains conversation history for coherent interactions
+
+3. **Smart Contract Analysis**
+   - Contract type detection (ERC20, ERC721, Proxy, etc.)
+   - Security pattern recognition
+   - Code verification status checking
+   - Activity metrics analysis
+   - Token metrics tracking
+
+4. **Transaction Analysis**
+   - Detailed transaction breakdowns
+   - Gas usage patterns
+   - Internal transaction tracking
+   - Token transfer analysis
+   - Historical activity patterns
+
+### LLM Tools
+
+The bot integrates several blockchain analysis tools that the LLM can use:
+
+1. **Account Analysis**
+   - Balance tracking
+   - Transaction history
+   - Token holdings
+   - Smart contract interactions
+
+2. **Token Analysis**
+   - Balance checking
+   - Transfer history
+   - Holder statistics
+   - Supply information
+
+3. **Contract Analysis**
+   - Code verification
+   - Interaction patterns
+   - Security assessment
+   - Activity metrics
+
+4. **Transaction Analysis**
+   - Status tracking
+   - Gas usage
+   - Method identification
+   - Value transfer details
+
+### Conversation Context
+
+The LLM maintains conversation context to provide coherent responses across multiple queries. It understands:
+- Previous queries and responses
+- User's blockchain context
+- Current network state
+- Recent transactions and events
+
 ## Development Notes
 
-This project uses:
-- [@celo/contractkit](https://www.npmjs.com/package/@celo/contractkit) for Celo blockchain interaction
-- [node-telegram-bot-api](https://www.npmjs.com/package/node-telegram-bot-api) for Telegram bot functionality
-- [OpenAI API](https://openai.com/api/) for natural language processing
-- [Winston](https://www.npmjs.com/package/winston) for logging
+### Project Structure
+```
+├── contracts/           # Smart contract source files
+│   ├── LegitToken.sol
+│   ├── SuspiciousToken.sol
+│   └── Lock.sol
+├── scripts/            # Deployment and utility scripts
+├── test/              # Test files
+├── src/               # Bot source code
+│   ├── index.js       # Main bot logic
+│   └── utils/         # Utility functions
+│       ├── aiTools.js # LLM integration
+│       └── logger.js  # Logging system
+```
 
-## Security Notes
+### Dependencies
 
-- Never share your private keys
-- Keep your `.env` file secure and never commit it to version control
-- Use testnet for development and testing
-- Monitor logs for suspicious activity
-- Friend addresses are stored locally and are not encrypted
+The project uses several key dependencies:
+- `@celo/contractkit`: Celo blockchain interaction
+- `@openzeppelin/contracts`: Secure contract implementations
+- `hardhat`: Smart contract development environment
+- `node-telegram-bot-api`: Telegram bot functionality
+- `openai`: LLM API integration (via Deepseek)
+- `viem`: Ethereum/Celo client
+- `winston`: Logging system
 
-## Contributing
+### Environment Variables
 
-Feel free to submit issues and enhancement requests!
+Required environment variables in `.env`:
+```
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token
+DEEPSEEK_API_KEY=your_deepseek_api_key
+WALLET_PRIVATE_KEY=your_wallet_private_key
+CELO_TESTNET_RPC=https://alfajores-forno.celo-testnet.org
+```
+
