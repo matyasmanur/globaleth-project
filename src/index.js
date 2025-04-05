@@ -19,7 +19,15 @@ const maxPriorityFeePerGasNum = 2;
 // Initialize OpenAI client
 openai = new OpenAI({
     apiKey: process.env.DEEPSEEK_API_KEY,
-    baseURL: "https://api.deepseek.com"
+    baseURL: "https://api.deepseek.com",
+    defaultHeaders: {
+      'Cache-Control': 'no-cache',
+      'Pragma': 'no-cache'
+  },
+  defaultQuery: {
+      cache: false,
+      temperature: 1.0
+  }
 });
 
 // Initialize Telegram Bot
@@ -410,7 +418,8 @@ async function processAIQuery(chatId, userId, query) {
   
     // Check if query requires tool usage
     const requiresTools = [
-      'transaction', 'balance', 'friend', 'address', 'history', 'list'
+      'transaction', 'balance', 'friend', 'address', 'history', 'list',
+      'contract', 'smart contract', 'token', 'nft', 'proxy', 'implementation'
     ].some(keyword => query.toLowerCase().includes(keyword));
   
     if (requiresTools) {
@@ -420,12 +429,12 @@ async function processAIQuery(chatId, userId, query) {
     // Get conversation history
     const history = conversationHistory.get(chatId) || [];
     logger.info('Conversation history:', history);
-  
+    // context = `I am analyzing data from the ${aiConfig.environment.network} network. I do follow the instructions to correctly use the tools.`;
     // Prepare messages for the AI
     const messages = [
       {
         role: 'system',
-        content: `${systemPrompt}\n\nIMPORTANT: For queries about transactions, balances, friends, or addresses, you MUST use the available tools to get real data. Do not make up or hallucinate data.\n\nWhen using tools:\n1. Use function_call to call tools directly\n2. Do not print parameters as JSON\n3. Call tools one at a time and wait for their response\n4. Use the tool response to provide accurate information\n\nExample of correct tool usage:\n{\n  "function_call": {\n    "name": "getTransactionHistory",\n    "arguments": {\n      "address": "0x123...",\n      "limit": 10\n    }\n  }\n}`
+        content: `${systemPrompt}\n\nIMPORTANT: For queries about transactions, balances, friends, or addresses, you MUST use the available tools to get real data. Do not make up or hallucinate data.\n\nWhen using tools:\n1. Use function_call to call tools directly\n2. Do not print parameters as JSON\n3. Call tools one at a time and wait for their response\n4. Use the tool response to provide accurate information, Example of correct tool usage:\n{\n  "function_call": {\n    "name": "getTransactionHistory",\n    "arguments": {\n      "address": "0x123...",\n      "limit": 10\n    }\n  }}\n\n`
       },
       ...history
     ];
@@ -481,7 +490,18 @@ async function processAIQuery(chatId, userId, query) {
             },
             required: ["hash"]
           }
-        }
+        },
+        {
+          name: "getContractInfo",
+          description: "Get comprehensive analysis of a smart contract including its type, activity, verification status, and metrics. REQUIRED for any contract analysis queries. Call using function_call with address parameter.",
+          parameters: {
+            type: "object",
+            properties: {
+              address: { type: "string" }
+            },
+            required: ["address"]
+          }
+        } 
       ],
       tool_choice: requiresTools ? "auto" : undefined
     };
@@ -588,6 +608,9 @@ async function processAIQuery(chatId, userId, query) {
       } else if (toolCall.name === 'getFriendInfo') {
         // For getFriendInfo, pass userId and name
         toolResult = await tools[toolCall.name](toolCall.arguments.userId, toolCall.arguments.name);
+      } else if (toolCall.name === 'getContractInfo') {
+        // For getContractInfo, pass address
+        toolResult = await tools[toolCall.name](toolCall.arguments.address);
       } else {
         // For other functions that take a single argument like getAccountInfo and getTokenBalances
         toolResult = await tools[toolCall.name](toolCall.arguments.address);
