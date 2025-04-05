@@ -9,9 +9,18 @@ const { goldTokenABI } = require('@celo/abis/GoldToken');
 const { stableTokenABI } = require('@celo/abis/StableToken');
 const logger = require('./utils/logger');
 const friendsManager = require('./utils/friendsManager');
+const { OpenAI } = require('openai');
+
+const { tools, conversationHistory, systemPrompt, localData, aiConfig, saveLocalData, loadLocalData } = require('./utils/aiTools');
 
 const maxFeePerGasNum = 30;
 const maxPriorityFeePerGasNum = 2;
+
+// Initialize OpenAI client
+openai = new OpenAI({
+    apiKey: process.env.DEEPSEEK_API_KEY,
+    baseURL: "https://api.deepseek.com"
+});
 
 // Initialize Telegram Bot
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
@@ -49,6 +58,10 @@ const registryContract = getContract({
     abi: registryABI,
     client: publicClient,
 });
+
+// Set bot address in local data
+localData.botAddress = account.address;
+saveLocalData();
 
 async function getTokenAddresses() {
     const tokens = ['GoldToken', 'StableToken'];
@@ -307,28 +320,393 @@ To: ${toAddress}
     }
 });
 
-// Handle other messages with OpenAI
-bot.on('message', async (msg) => {
-    if (msg.text.startsWith('/')) return; // Skip command messages
-    
+// AI Command Handlers
+bot.onText(/\/llm (.+)/, async (msg, match) => {
     const chatId = msg.chat.id;
-    logger.info(`Natural language query from ${msg.from.username || msg.from.id}: ${msg.text}`);
+    const query = match[1];
+    const userId = msg.from.id;
+    const username = msg.from.username || userId;
+    
+    logger.info(`[AI] New query from ${username}: ${query}`);
     
     try {
-        const completion = await openai.chat.completions.create({
-            model: "deepseek-chat",
-            messages: [
-                { role: "system", content: "You are a helpful assistant for Celo blockchain operations." },
-                { role: "user", content: msg.text }
-            ]
-        });
+        // Initialize conversation if not exists
+        if (!conversationHistory.has(chatId)) {
+            logger.info(`[AI] Initializing new conversation for user ${username}`);
+            conversationHistory.set(chatId, []);
+        }
         
-        await bot.sendMessage(chatId, completion.choices[0].message.content);
-        logger.info(`Response sent to user: ${msg.from.username || msg.from.id}`);
+        // Add context about the bot
+        const context = `I am analyzing data from the ${aiConfig.environment.network} network. My address is ${localData.botAddress}.`;
+        logger.info(`[AI] Adding context: ${context}`);
+        
+        // Add user message to history
+        conversationHistory.get(chatId).push({ role: 'user', content: `${context}\n\n${query}` });
+        logger.info(`[AI] Added user message to conversation history`);
+        
+        // Get AI response
+        logger.info(`[AI] Processing query...`);
+        const response = await processAIQuery(chatId, userId, query);
+        logger.info(`[AI] Response generated: ${response.substring(0, 100)}...`);
+        
+        // Add AI response to history
+        conversationHistory.get(chatId).push({ role: 'assistant', content: response });
+        logger.info(`[AI] Added AI response to conversation history`);
+        
+        await bot.sendMessage(chatId, response);
+        logger.info(`[AI] Response sent to user ${username}`);
     } catch (error) {
-        logger.error('Error processing message:', error);
-        await bot.sendMessage(chatId, `Error processing message: ${error.message}`);
+        logger.error(`[AI] Error processing query for user ${username}:`, error);
+        await bot.sendMessage(chatId, `Error processing query: ${error.message}`);
     }
 });
+
+bot.onText(/\/llmnext (.+)/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const query = match[1];
+    const userId = msg.from.id;
+    const username = msg.from.username || userId;
+    
+    logger.info(`[AI] Follow-up query from ${username}: ${query}`);
+    
+    try {
+        if (!conversationHistory.has(chatId)) {
+            logger.warn(`[AI] No previous conversation found for user ${username}`);
+            await bot.sendMessage(chatId, 'No previous conversation found. Please start with /llm command.');
+            return;
+        }
+        
+        // Add user message to history
+        conversationHistory.get(chatId).push({ role: 'user', content: query });
+        logger.info(`[AI] Added follow-up message to conversation history`);
+        
+        // Get AI response
+        logger.info(`[AI] Processing follow-up query...`);
+        const response = await processAIQuery(chatId, userId, query);
+        logger.info(`[AI] Follow-up response generated: ${response.substring(0, 100)}...`);
+        
+        // Add AI response to history
+        conversationHistory.get(chatId).push({ role: 'assistant', content: response });
+        logger.info(`[AI] Added follow-up response to conversation history`);
+        
+        await bot.sendMessage(chatId, response);
+        logger.info(`[AI] Follow-up response sent to user ${username}`);
+    } catch (error) {
+        logger.error(`[AI] Error processing follow-up for user ${username}:`, error);
+        await bot.sendMessage(chatId, `Error processing follow-up: ${error.message}`);
+    }
+});
+
+
+async function processAIQuery(chatId, userId, query) {
+    // const { OpenAI } = require('openai');
+    // const openai = new OpenAI({
+    //   apiKey: process.env.DEEPSEEK_API_KEY,
+    //   baseURL: "https://api.deepseek.com"
+    // });
+  
+    logger.info('=== Starting AI Query Processing ===');
+    logger.info('Query parameters:', { chatId, userId, query });
+  
+    // Check if query requires tool usage
+    const requiresTools = [
+      'transaction', 'balance', 'friend', 'address', 'history', 'list'
+    ].some(keyword => query.toLowerCase().includes(keyword));
+  
+    if (requiresTools) {
+      logger.info('Query requires tool usage');
+    }
+  
+    // Get conversation history
+    const history = conversationHistory.get(chatId) || [];
+    logger.info('Conversation history:', history);
+  
+    // Prepare messages for the AI
+    const messages = [
+      {
+        role: 'system',
+        content: `${systemPrompt}\n\nIMPORTANT: For queries about transactions, balances, friends, or addresses, you MUST use the available tools to get real data. Do not make up or hallucinate data.\n\nWhen using tools:\n1. Use function_call to call tools directly\n2. Do not print parameters as JSON\n3. Call tools one at a time and wait for their response\n4. Use the tool response to provide accurate information\n\nExample of correct tool usage:\n{\n  "function_call": {\n    "name": "getTransactionHistory",\n    "arguments": {\n      "address": "0x123...",\n      "limit": 10\n    }\n  }\n}`
+      },
+      ...history
+    ];
+    logger.info('Prepared messages for AI:', messages);
+  
+    // Get AI response
+    logger.info('Sending request to OpenAI API...');
+    const requestConfig = {
+      model: "deepseek-chat",
+      messages: messages.map(msg => ({ role: msg.role, content: msg.content })),
+      functions: [
+        {
+          name: "getAccountInfo",
+          description: "Get detailed account information including balance, transaction count, and status. REQUIRED for any account analysis queries. Call using function_call with address parameter.",
+          parameters: {
+            type: "object",
+            properties: {
+              address: { type: "string" }
+            },
+            required: ["address"]
+          }
+        },
+        {
+          name: "getTokenBalances",
+          description: "Get token balances for an address. REQUIRED for any balance queries. Call using function_call with address parameter.",
+          parameters: {
+            type: "object",
+            properties: {
+              address: { type: "string" }
+            },
+            required: ["address"]
+          }
+        },
+        {
+          name: "getFriendInfo",
+          description: "Get information about a friend from local storage. REQUIRED for any friend-related queries. Call using function_call with userId and name parameters.",
+          parameters: {
+            type: "object",
+            properties: {
+              userId: { type: "number" },
+              name: { type: "string" }
+            },
+            required: ["userId", "name"]
+          }
+        },
+        {
+          name: "getTransactionDetails",
+          description: "Get detailed information about a transaction. REQUIRED for any transaction detail queries. Call using function_call with hash parameter.",
+          parameters: {
+            type: "object",
+            properties: {
+              hash: { type: "string" }
+            },
+            required: ["hash"]
+          }
+        }
+      ],
+      tool_choice: requiresTools ? "auto" : undefined
+    };
+    // logger.info('OpenAI request configuration:', requestConfig);
+  
+    try {
+      const completion = await openai.chat.completions.create(requestConfig);
+      logger.info('Raw OpenAI response:', completion);
+  
+      const response = completion.choices[0].message;
+      logger.info('Processed response:', response);
+  
+      let toolCall = null;
+      
+      if (response.content && response.content.includes('function_call')) {
+        try {
+          logger.info('Raw response content:', response.content);
+          
+          // Helper function to balance braces
+          function findMatchingCloseBrace(str, startIndex) {
+            let count = 1;
+            for (let i = startIndex + 1; i < str.length; i++) {
+              if (str[i] === '{') count++;
+              if (str[i] === '}') count--;
+              if (count === 0) return i;
+            }
+            return -1;
+          }
+
+          // Find the start of the JSON object
+          const startIndex = response.content.indexOf('{');
+          if (startIndex !== -1) {
+            const endIndex = findMatchingCloseBrace(response.content, startIndex);
+            if (endIndex !== -1) {
+              const jsonContent = response.content.substring(startIndex, endIndex + 1);
+              logger.info('Extracted JSON content:', jsonContent);
+
+              try {
+                const parsed = JSON.parse(jsonContent);
+                logger.info('Successfully parsed JSON:', parsed);
+
+                if (parsed.function_call) {
+                  const functionName = parsed.function_call.name;
+                  const args = parsed.function_call.arguments;
+                  
+                  logger.info('Extracted function details:', {
+                    name: functionName,
+                    arguments: args
+                  });
+                  
+                  // Create toolCall object based on function name
+                  toolCall = {
+                    id: `generated-${Date.now()}`,
+                    name: functionName,
+                    arguments: args
+                  };
+                  
+                  logger.info('Created toolCall:', toolCall);
+                }
+              } catch (parseErr) {
+                logger.error('Failed to parse JSON:', parseErr);
+              }
+            }
+          }
+
+          if (!toolCall) {
+            logger.warn('No valid function call found in response content');
+          }
+        } catch (err) {
+          logger.error('Error parsing function call from content:', err);
+        }
+      }
+      // Fallback to existing function_call if direct parsing failed
+      if (!toolCall && response.function_call) {
+        toolCall = response.function_call;
+      }
+      // Fallback to tool_calls if both above methods failed
+      if (!toolCall && response.tool_calls) {
+        toolCall = response.tool_calls[0];
+      }
+
+      if (!toolCall) {
+        throw new Error('Query requires tool usage but no tools were used. The AI must use function_call to call tools directly, not just print their parameters as JSON.');
+      }
+
+      // If no id is provided, generate one
+      if (!toolCall.id) {
+        logger.warn('Assistant function call did not include a tool_call id. Generating one.');
+        toolCall.id = `generated-${Date.now()}`;
+      }
+  
+      // Safely parse the arguments: only parse if they are a string.
+      const parsedArgs = typeof toolCall.arguments === "string"
+        ? JSON.parse(toolCall.arguments)
+        : toolCall.arguments;
+  
+      logger.info('AI requested to use tool:', toolCall);
+  
+      // Execute the tool with the parsed arguments
+      let toolResult;
+      if (toolCall.name === 'getTransactionDetails') {
+        // For getTransactionDetails, pass just the hash
+        toolResult = await tools[toolCall.name](toolCall.arguments.hash);
+      } else if (toolCall.name === 'getFriendInfo') {
+        // For getFriendInfo, pass userId and name
+        toolResult = await tools[toolCall.name](toolCall.arguments.userId, toolCall.arguments.name);
+      } else {
+        // For other functions that take a single argument like getAccountInfo and getTokenBalances
+        toolResult = await tools[toolCall.name](toolCall.arguments.address);
+      }
+  
+      if (!toolResult) {
+        throw new Error(`Tool ${toolCall.name} returned no data`);
+      }
+      
+      logger.info('Tool execution result:', toolResult);
+
+    // // Build an assistant message that includes the tool_calls field.
+    // // This ensures the subsequent tool message is considered a proper response.
+    // const assistantMessage = {
+    //     role: 'assistant',
+    //     content: response.content,
+    //     tool_calls: [toolCall]  // Include the tool call details here.
+    // };
+    
+    // // Build the interpretation request ensuring that the tool message references the same tool_call id.
+    // const interpretationRequest = {
+    //     model: "deepseek-chat",
+    //     messages: [
+    //     ...messages,
+    //     assistantMessage, // now includes tool_calls
+    //     { 
+    //         role: 'tool', 
+    //         name: toolCall.name, 
+    //         content: JSON.stringify(toolResult),
+    //         tool_call_id: toolCall.id  // same id as in the assistantMessage's tool_calls
+    //     }
+    //     ]
+    // };
+    // logger.info('Interpretation request:', interpretationRequest);
+    
+    // const interpretation = await openai.chat.completions.create(interpretationRequest);
+
+// Step 1: Ensure all messages have the correct 'type'
+const formattedMessages = messages.map(msg => ({
+  ...msg,
+  type: msg.type || msg.role
+}));
+
+// Step 2: Build the assistant message that includes tool_calls
+const assistantMessage = {
+  role: 'assistant',
+  type: 'assistant',
+  content: null, // tool-calling assistants always have null content
+  tool_calls: [
+    {
+      id: toolCall.id, // must match tool_call_id in toolMessage
+      type: 'function',
+      function: {
+        name: toolCall.name,
+        arguments: JSON.stringify(toolCall.arguments) // must be a JSON string!
+      }
+    }
+  ]
+};
+
+// Step 3: Build the tool message with string content (this is where error came from)
+const toolMessage = {
+  role: 'tool',
+  type: 'tool',
+  tool_call_id: toolCall.id, // must match assistant tool_calls[].id
+  name: toolCall.name,
+  content: typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult) // convert to string if needed
+};
+
+// Step 4: Compose the full interpretation request
+const interpretationRequest = {
+  model: "deepseek-chat",
+  messages: [
+    ...formattedMessages,
+    assistantMessage,
+    toolMessage
+  ]
+};
+      
+      // logger.info('Interpretation request:', interpretationRequest);
+      
+      const interpretation = await openai.chat.completions.create(interpretationRequest); 
+      if (!interpretation.choices[0]?.message?.content) {
+        throw new Error('Invalid interpretation response from OpenAI API');
+      }
+  
+      const finalResponse = interpretation.choices[0].message.content;
+      logger.info('Final response:', finalResponse);
+  
+      return finalResponse;
+    } catch (error) {
+      logger.error('Error in AI query processing:', error);
+      throw error;
+    }
+  }
+  
+
+
+// bot.on('message', async (msg) => {
+//     if (msg.text.startsWith('/')) return; // Skip command messages
+    
+//     const chatId = msg.chat.id;
+//     logger.info(`Natural language query from ${msg.from.username || msg.from.id}: ${msg.text}`);
+    
+//     try {
+//         const completion = await openai.chat.completions.create({
+//             model: "deepseek-chat",
+//             messages: [
+//                 { role: "system", content: "You are a helpful assistant for Celo blockchain operations." },
+//                 { role: "user", content: msg.text }
+//             ]
+//         });
+        
+//         await bot.sendMessage(chatId, completion.choices[0].message.content);
+//         logger.info(`Response sent to user: ${msg.from.username || msg.from.id}`);
+//     } catch (error) {
+//         logger.error('Error processing message:', error);
+//         await bot.sendMessage(chatId, `Error processing message: ${error.message}`);
+//     }
+// });
 
 logger.info('Bot is running...'); 
