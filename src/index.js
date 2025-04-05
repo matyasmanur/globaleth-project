@@ -1,36 +1,69 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
-const { ContractKit, newKit } = require('@celo/contractkit');
-const Web3 = require('web3');
+const { createPublicClient, createWalletClient, http } = require('viem');
+const { privateKeyToAccount } = require('viem/accounts');
+const { celoAlfajores } = require('viem/chains');
+const { getContract } = require('viem');
+const { registryABI } = require('@celo/abis');
+const { goldTokenABI } = require('@celo/abis/GoldToken');
+const { stableTokenABI } = require('@celo/abis/StableToken');
 const logger = require('./utils/logger');
 const friendsManager = require('./utils/friendsManager');
+
+const maxFeePerGasNum = 30;
+const maxPriorityFeePerGasNum = 2;
 
 // Initialize Telegram Bot
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 logger.info('Telegram bot initialized');
 
-// Initialize Celo Kit
-const web3 = new Web3(process.env.CELO_TESTNET_RPC_URL);
-const kit = newKit(process.env.CELO_TESTNET_RPC_URL);
-logger.info('Celo Kit initialized');
-
-// Initialize OpenAI client
-const { OpenAI } = require('openai');
-const openai = new OpenAI({
-    apiKey: process.env.DEEPSEEK_API_KEY,
-    baseURL: "https://api.deepseek.com"
+// Initialize viem clients
+const publicClient = createPublicClient({
+    chain: celoAlfajores,
+    transport: http()
 });
-logger.info('OpenAI client initialized');
+
+const walletClient = createWalletClient({
+    transport: http(celoAlfajores.rpcUrls.default.http[0]),
+    chain: celoAlfajores,
+});
 
 // Initialize wallet
-let wallet;
+let account;
 try {
-    wallet = kit.web3.eth.accounts.privateKeyToAccount(process.env.WALLET_PRIVATE_KEY);
-    kit.addAccount(wallet.privateKey);
-    logger.info(`Wallet initialized with address: ${wallet.address}`);
+    // Ensure private key starts with 0x and is properly formatted
+    const privateKey = process.env.WALLET_PRIVATE_KEY.startsWith('0x') 
+        ? process.env.WALLET_PRIVATE_KEY 
+        : `0x${process.env.WALLET_PRIVATE_KEY}`;
+    account = privateKeyToAccount(privateKey);
+    logger.info(`Wallet initialized with address: ${account.address}`);
 } catch (error) {
     logger.error('Failed to initialize wallet:', error);
     process.exit(1);
+}
+
+// Initialize token contracts
+const REGISTRY_CONTRACT_ADDRESS = '0x000000000000000000000000000000000000ce10';
+const registryContract = getContract({
+    address: REGISTRY_CONTRACT_ADDRESS,
+    abi: registryABI,
+    client: publicClient,
+});
+
+async function getTokenAddresses() {
+    const tokens = ['GoldToken', 'StableToken'];
+    const addresses = await Promise.all(
+        tokens.map(async (token) => {
+            const address = await publicClient.readContract({
+                address: REGISTRY_CONTRACT_ADDRESS,
+                abi: registryABI,
+                functionName: 'getAddressForString',
+                args: [token]
+            });
+            return [token, address];
+        })
+    );
+    return Object.fromEntries(addresses);
 }
 
 // Command handlers
@@ -46,7 +79,6 @@ Available commands:
 /tx_info <hash> - Get transaction information
 /send <amount> <address|friend> - Send CELO to an address or friend
 /send_cusd <amount> <address|friend> - Send cUSD to an address or friend
-/price - Get current CELO and cUSD prices
 /addfriend <name> <address> - Add a friend's address
 /removefriend <name> - Remove a friend
 /listfriends - List all your friends
@@ -79,11 +111,29 @@ bot.onText(/\/balance/, async (msg) => {
     logger.info(`Balance check requested by: ${msg.from.username || msg.from.id}`);
     
     try {
-        const balance = await kit.getTotalBalance(wallet.address);
+        const tokenAddresses = await getTokenAddresses();
+        const celoAddress = tokenAddresses['GoldToken'];
+        const cusdAddress = tokenAddresses['StableToken'];
+
+        const [celoBalance, cusdBalance] = await Promise.all([
+            publicClient.readContract({
+                abi: goldTokenABI,
+                address: celoAddress,
+                functionName: 'balanceOf',
+                args: [account.address],
+            }),
+            publicClient.readContract({
+                abi: stableTokenABI,
+                address: cusdAddress,
+                functionName: 'balanceOf',
+                args: [account.address],
+            })
+        ]);
+
         const response = `
 Your Celo Balance:
-CELO: ${balance.CELO.toString()}
-cUSD: ${balance.cUSD.toString()}
+CELO: ${(Number(celoBalance) / 1e18).toFixed(4)}
+cUSD: ${(Number(cusdBalance) / 1e18).toFixed(4)}
         `;
         await bot.sendMessage(chatId, response);
         logger.info(`Balance sent to user: ${msg.from.username || msg.from.id}`);
@@ -99,16 +149,18 @@ bot.onText(/\/tx_info (.+)/, async (msg, match) => {
     logger.info(`Transaction info requested for hash: ${txHash} by: ${msg.from.username || msg.from.id}`);
     
     try {
-        const tx = await kit.web3.eth.getTransaction(txHash);
-        const receipt = await kit.web3.eth.getTransactionReceipt(txHash);
+        const tx = await publicClient.getTransaction({ hash: txHash });
+        const receipt = await publicClient.getTransactionReceipt({ hash: txHash });
+        
+        
         
         const response = `
 Transaction Information:
 Hash: ${txHash}
 From: ${tx.from}
 To: ${tx.to || 'Contract Creation'}
-Value: ${kit.web3.utils.fromWei(tx.value, 'ether')} CELO
-Status: ${receipt.status ? 'Success' : 'Failed'}
+Value: ${Number(tx.value) / 1e18} CELO
+Status: ${receipt.status === 'success' ? 'Success' : 'Failed'}
 Gas Used: ${receipt.gasUsed}
         `;
         await bot.sendMessage(chatId, response);
@@ -186,7 +238,6 @@ bot.onText(/\/send (\d+(?:\.\d+)?) (.+)/, async (msg, match) => {
     
     try {
         let toAddress = recipient;
-        // Check if recipient is a friend name
         if (!recipient.startsWith('0x')) {
             toAddress = friendsManager.getFriend(msg.from.id, recipient);
             if (!toAddress) {
@@ -195,30 +246,25 @@ bot.onText(/\/send (\d+(?:\.\d+)?) (.+)/, async (msg, match) => {
             }
         }
         
-        const goldToken = await kit.contracts.getGoldToken();
-        const tx = await goldToken.transfer(
-            toAddress,
-            kit.web3.utils.toWei(amount, 'ether')
-        ).send({ 
-            from: wallet.address,
-            type: 2, // EIP-1559 transaction type
-            maxFeePerGas: kit.web3.utils.toWei('0.1', 'gwei'),
-            maxPriorityFeePerGas: kit.web3.utils.toWei('0.01', 'gwei')
+        const hash = await walletClient.sendTransaction({
+            to: toAddress,
+            value: BigInt(amount * 1e18),
+            account: account,
         });
         
         const response = `
-Transaction sent! 🚀
-Hash: ${tx.hash}
-Amount: ${amount} CELO
-To: ${toAddress}
-        `;
-        await bot.sendMessage(chatId, response);
-        logger.info(`CELO transfer successful: ${tx.hash}`);
-    } catch (error) {
-        logger.error('Error sending CELO:', error);
-        await bot.sendMessage(chatId, `Error sending CELO: ${error.message}`);
-    }
-});
+            Transaction sent! 🚀
+            Hash: ${hash}
+            Amount: ${amount} CELO
+            To: ${toAddress}
+                    `;
+                    await bot.sendMessage(chatId, response);
+                    logger.info(`CELO transfer successful: ${hash}`);
+                } catch (error) {
+                    logger.error('Error sending CELO:', error);
+                    await bot.sendMessage(chatId, `Error sending CELO: ${error.message}`);
+                }
+            });
 
 bot.onText(/\/send_cusd (\d+(?:\.\d+)?) (.+)/, async (msg, match) => {
     const chatId = msg.chat.id;
@@ -228,7 +274,6 @@ bot.onText(/\/send_cusd (\d+(?:\.\d+)?) (.+)/, async (msg, match) => {
     
     try {
         let toAddress = recipient;
-        // Check if recipient is a friend name
         if (!recipient.startsWith('0x')) {
             toAddress = friendsManager.getFriend(msg.from.id, recipient);
             if (!toAddress) {
@@ -237,25 +282,25 @@ bot.onText(/\/send_cusd (\d+(?:\.\d+)?) (.+)/, async (msg, match) => {
             }
         }
         
-        const stableToken = await kit.contracts.getStableToken();
-        const tx = await stableToken.transfer(
-            toAddress,
-            kit.web3.utils.toWei(amount, 'ether')
-        ).send({ 
-            from: wallet.address,
-            type: 2, // EIP-1559 transaction type
-            maxFeePerGas: kit.web3.utils.toWei('0.1', 'gwei'),
-            maxPriorityFeePerGas: kit.web3.utils.toWei('0.01', 'gwei')
+        const tokenAddresses = await getTokenAddresses();
+        const cusdAddress = tokenAddresses['StableToken'];
+        
+        const hash = await walletClient.writeContract({
+            abi: stableTokenABI,
+            address: cusdAddress,
+            functionName: 'transfer',
+            args: [toAddress, BigInt(amount * 1e18)],
+            account: account,
         });
         
         const response = `
 Transaction sent! 🚀
-Hash: ${tx.hash}
+Hash: ${hash}
 Amount: ${amount} cUSD
 To: ${toAddress}
         `;
         await bot.sendMessage(chatId, response);
-        logger.info(`cUSD transfer successful: ${tx.hash}`);
+        logger.info(`cUSD transfer successful: ${hash}`);
     } catch (error) {
         logger.error('Error sending cUSD:', error);
         await bot.sendMessage(chatId, `Error sending cUSD: ${error.message}`);

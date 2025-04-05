@@ -1,21 +1,27 @@
 {
   "name": "celo-telegram-bot",
   "version": "1.0.0",
-  "description": "A Telegram bot for interacting with Celo blockchain",
+  "description": "A Telegram bot for interacting with the Celo blockchain",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "nodemon src/index.js"
+    "pretest": "node test/setup.js",
+    "test": "mocha test/**/*.test.js",
+    "test:watch": "mocha --watch test/**/*.test.js"
   },
   "dependencies": {
+    "@celo/abis": "^12.0.2",
     "@celo/contractkit": "^4.0.0",
-    "dotenv": "^16.3.1",
-    "node-telegram-bot-api": "^0.64.0",
-    "openai": "^4.20.1",
-    "web3": "^1.10.0",
+    "dotenv": "^16.4.7",
+    "node-telegram-bot-api": "^0.61.0",
+    "openai": "^4.0.0",
+    "viem": "^2.25.0",
+    "web3": "^1.8.0",
     "winston": "^3.11.0"
   },
   "devDependencies": {
-    "nodemon": "^3.0.1"
+    "chai": "^4.3.0",
+    "mocha": "^10.0.0",
+    "sinon": "^14.0.0"
   }
-} 
+}
