@@ -205,6 +205,34 @@ async function getNFTTransfers(address) {
   return response.data.result || [];
 }
 
+
+// CONTRACT FUNCTIONS
+
+// Check if contract + get source info
+async function getContractMetadata(address) {
+    const url = `${BASE_URL}?module=contract&action=getsourcecode&address=${address}`;
+    const { data } = await axios.get(url);
+    return data.result[0]; // Contains ABI, SourceCode, ContractName, etc.
+  }
+  
+  // Get transactions to the contract
+  async function getContractTransactions(address) {
+    const url = `${BASE_URL}?module=account&action=txlist&address=${address}&startblock=0&endblock=99999999&sort=desc`;
+    const { data } = await axios.get(url);
+    return data.result || [];
+  }
+  
+  
+  // Token transfers the contract was involved in (if it's a token)
+  async function getTokenTransfers(address) {
+    const url = `${BASE_URL}?module=account&action=tokentx&address=${address}`;
+    const { data } = await axios.get(url);
+    return data.result || [];
+  }
+  
+  
+  
+
 // Initialize local data
 loadLocalData();
 
@@ -301,6 +329,142 @@ const tools = {
 
         logger.info('[AI Tool] Account info generated:', accountInfo);
         return accountInfo;
+    },
+
+    async getContractInfo(address){
+        const [
+            meta,
+            txs,
+            internalTxs,
+            tokenTransfers,
+            nftTransfers,
+            balance
+          ] = await Promise.all([
+            getContractMetadata(address),
+            getContractTransactions(address),
+            getInternalTxs(address),
+            getTokenTransfers(address),
+            getNFTTransfers(address),
+            getBalance(address)
+          ]);
+        
+          const creationTx = txs[txs.length - 1];
+          const creator = creationTx?.from;
+          const createdAt = creationTx?.timeStamp
+            ? new Date(creationTx.timeStamp * 1000).toLocaleString()
+            : 'Unknown';
+
+          // Process transactions
+          const totalTxs = txs.length;
+          const uniqueInteractors = new Set([
+            ...txs.map(tx => tx.from),
+            ...txs.map(tx => tx.to)
+          ]).size;
+
+          // Calculate activity metrics
+          const activityByMonth = txs.reduce((acc, tx) => {
+            const month = new Date(tx.timeStamp * 1000).toISOString().slice(0, 7);
+            acc[month] = (acc[month] || 0) + 1;
+            return acc;
+          }, {});
+
+          // Process token transfers if it's a token contract
+          const isToken = meta.ContractName?.toLowerCase().includes('token');
+          const tokenMetrics = isToken ? {
+            totalTransfers: tokenTransfers.length,
+            uniqueHolders: new Set(tokenTransfers.map(t => t.to)).size,
+            totalSupply: meta.TotalSupply || 'Unknown',
+            tokenName: meta.ContractName,
+            tokenSymbol: meta.Symbol || 'Unknown'
+          } : null;
+
+          // Analyze contract interactions
+          const methodCalls = txs.reduce((acc, tx) => {
+            if (tx.input && tx.input.length >= 10) {
+              const methodId = tx.input.slice(0, 10);
+              acc[methodId] = (acc[methodId] || 0) + 1;
+            }
+            return acc;
+          }, {});
+
+          // Get verification status and source code info
+          const verificationInfo = {
+            isVerified: meta.ABI !== 'Contract source code not verified',
+            compiler: meta.CompilerVersion || 'Unknown',
+            optimization: meta.OptimizationUsed === '1',
+            sourceCode: meta.SourceCode ? true : false
+          };
+
+          // Format the latest transactions
+          const latestTransactions = txs.slice(0, 10).map(tx => ({
+            hash: tx.hash,
+            from: tx.from,
+            to: tx.to,
+            value: fromWei(tx.value),
+            timestamp: new Date(Number(tx.timeStamp) * 1000).toISOString(),
+            methodId: tx.input?.slice(0, 10) || 'None',
+            status: tx.isError === '0' ? 'success' : 'failed'
+          }));
+
+          const contractInfo = {
+            address,
+            meta: {
+              name: meta.ContractName || 'Unknown',
+              creator,
+              createdAt,
+              balance: fromWei(balance),
+              implementation: meta.Implementation || null, // For proxy contracts
+              isProxy: meta.Proxy === '1'
+            },
+            activity: {
+              totalTransactions: totalTxs,
+              uniqueInteractors,
+              activityByMonth,
+              internalTransactions: internalTxs.length,
+              latestTransactions
+            },
+            verification: verificationInfo,
+            tokenInfo: tokenMetrics,
+            analysis: {
+              topMethods: methodCalls,
+              hasNFTActivity: nftTransfers.length > 0,
+              averageDailyTxs: totalTxs / (Object.keys(activityByMonth).length || 1),
+              contractType: this._determineContractType(meta, tokenTransfers, nftTransfers)
+            }
+          };
+
+          // Cache the results
+          setCacheEntry('addresses', address, {
+            type: 'contract',
+            info: contractInfo,
+            lastUpdated: new Date().toISOString()
+          });
+
+          return contractInfo;
+    },
+
+    // Helper method to determine contract type
+    _determineContractType(meta, tokenTransfers, nftTransfers) {
+        if (meta.ContractName?.toLowerCase().includes('token')) {
+            if (meta.ContractName?.toLowerCase().includes('erc721') || 
+                meta.ContractName?.toLowerCase().includes('nft')) {
+                return 'NFT (ERC721)';
+            }
+            if (meta.ContractName?.toLowerCase().includes('erc1155')) {
+                return 'Multi-Token (ERC1155)';
+            }
+            return 'Token (ERC20)';
+        }
+        if (nftTransfers.length > 0) {
+            return 'NFT-Related';
+        }
+        if (meta.Proxy === '1') {
+            return 'Proxy';
+        }
+        if (meta.ContractName?.toLowerCase().includes('factory')) {
+            return 'Factory';
+        }
+        return 'General Smart Contract';
     },
 
     async getTokenBalances(address) {
