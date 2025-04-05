@@ -8,6 +8,7 @@ const friendsManager = require('./friendsManager');
 const fs = require('fs');
 const path = require('path');
 const logger = require('./logger');
+const { default: axios } = require('axios');
 
 // Load AI configuration
 logger.info('=== Loading AI Configuration ===');
@@ -49,6 +50,9 @@ const registryContract = getContract({
     abi: registryABI,
     client: publicClient,
 });
+
+const BASE_URL = 'https://celo-alfajores.blockscout.com/api';
+
 
 // logger.info('Registry contract initialized with config:', {
 //     address: REGISTRY_CONTRACT_ADDRESS,
@@ -155,6 +159,52 @@ function setCacheEntry(cacheType, key, data) {
     saveLocalData();
 }
 
+// Helper: Convert from Wei to CELO
+const fromWei = (value) => parseFloat(value) / 1e18;
+
+// Get CELO balance
+async function getBalance(address) {
+  const url = `${BASE_URL}?module=account&action=balance&address=${address}`;
+  const response = await axios.get(url);
+  return fromWei(response.data.result);
+}
+
+// Get normal transactions
+async function getTransactions(address) {
+  const url = `${BASE_URL}?module=account&action=txlist&address=${address}&startblock=0&endblock=99999999&sort=desc`;
+  const response = await axios.get(url);
+  return response.data.result || [];
+}
+
+// Get token holdings
+async function getTokenHoldings(address) {
+  const url = `${BASE_URL}?module=account&action=tokenlist&address=${address}`;
+  const response = await axios.get(url);
+  return response.data.result || [];
+}
+
+// Get internal transactions
+async function getInternalTxs(address) {
+  const url = `${BASE_URL}?module=account&action=txlistinternal&address=${address}`;
+  const response = await axios.get(url);
+  return response.data.result || [];
+}
+
+// Check if the address is a contract
+async function checkIfContract(address) {
+  const url = `${BASE_URL}?module=contract&action=getsourcecode&address=${address}`;
+  const response = await axios.get(url);
+  const result = response.data.result?.[0];
+  return result?.ABI !== 'Contract source code not verified';
+}
+
+// Get NFT transfers
+async function getNFTTransfers(address) {
+  const url = `${BASE_URL}?module=account&action=tokennfttx&address=${address}`;
+  const response = await axios.get(url);
+  return response.data.result || [];
+}
+
 // Initialize local data
 loadLocalData();
 
@@ -163,48 +213,94 @@ const tools = {
     async getAccountInfo(address) {
         logger.info('[AI Tool] getAccountInfo - Starting');
         logger.info('[AI Tool] Parameters:', { address });
+
+        const [balance, transactions, tokens, internalTxs, isContract, nftTransfers] = await Promise.all([
+            getBalance(address),
+            getTransactions(address),
+            getTokenHoldings(address),
+            getInternalTxs(address),
+            checkIfContract(address),
+            getNFTTransfers(address)
+          ]);
         
-        try {
-            const [balance, nonce, code, latestBlock, gasPrice] = await Promise.all([
-                publicClient.getBalance({ address }),
-                publicClient.getTransactionCount({ address }),
-                publicClient.getBytecode({ address }),
-                publicClient.getBlock(),
-                publicClient.getGasPrice()
-            ]);
+        logger.info('[AI Tool] Got all data from axios');
+        
+        const totalTxs = transactions.length;
+        const outgoing = transactions.filter(tx => tx.from.toLowerCase() === address.toLowerCase()).length;
+        const incoming = totalTxs - outgoing;
+        const gasUsed = transactions.reduce((sum, tx) => sum + (parseInt(tx.gasUsed) * parseInt(tx.gasPrice)), 0);
+        const gasInCELO = fromWei(gasUsed.toString());
+        const firstActivity = transactions.length ? new Date(transactions[transactions.length - 1].timeStamp * 1000).toLocaleDateString() : null;
+        const lastActivity = transactions.length ? new Date(transactions[0].timeStamp * 1000).toLocaleDateString() : null;
 
-            // Calculate some derived values
-            const balanceInCelo = Number(balance) / 1e18;
-            const gasPriceGwei = Number(gasPrice) / 1e9;
-            const estimatedTransferCost = Number(gasPrice * 21000n) / 1e18;
-            const maxPossibleTransfers = Number(balance) / Number(gasPrice * 21000n);
+        // Format the last 15 transactions
+        const latestTransactions = transactions.slice(0, 15).map(tx => ({
+            hash: tx.hash,
+            from: tx.from,
+            to: tx.to,
+            value: fromWei(tx.value),
+            timestamp: new Date(Number(tx.timeStamp) * 1000).toISOString(),
+            gasUsed: tx.gasUsed,
+            gasPrice: tx.gasPrice,
+            status: tx.isError === '0' ? 'success' : 'failed'
+        }));
 
-            // Format basic account information
-            const accountInfo = {
-                address,
-                balance: {
-                    wei: balance.toString(),
-                    celo: balanceInCelo.toFixed(6),
-                    usdEstimate: `~$${(balanceInCelo * 0.45).toFixed(2)}` // Rough CELO price estimate
-                },
-                transactions: {
-                    total: nonce,
-                    averagePerBlock: nonce > 0 ? (nonce / Number(latestBlock.number)).toFixed(6) : 0
-                },
-                accountType: code && code.length > 2 ? 'Contract' : 'Wallet',
-                accountStatus: {
-                    isActive: nonce > 0,
-                    hasBalance: balance > 0n,
-                    canSendTransactions: balance > gasPrice * 21000n
-                }
-            };
+        // Format token holdings
+        const tokenHoldings = tokens.map(token => ({
+            name: token.name,
+            symbol: token.symbol,
+            balance: fromWei(token.balance),
+            contractAddress: token.contractAddress
+        }));
 
-            logger.info('[AI Tool] Account info generated:', accountInfo);
-            return accountInfo;
-        } catch (error) {
-            logger.error('[AI Tool] Error getting account info:', error);
-            throw error;
-        }
+        // Format NFT holdings
+        const nftHoldings = nftTransfers.reduce((holdings, transfer) => {
+            const key = `${transfer.tokenName}_${transfer.tokenID}`;
+            if (!holdings.has(key)) {
+                holdings.set(key, {
+                    name: transfer.tokenName,
+                    tokenId: transfer.tokenID,
+                    contractAddress: transfer.contractAddress
+                });
+            }
+            return holdings;
+        }, new Map());
+
+        const accountInfo = {
+            address,
+            balance: {
+                celo: balance,
+                wei: (balance * 1e18).toString(),
+                usdEstimate: `~$${(balance * 0.45).toFixed(2)}` // Rough CELO price estimate
+            },
+            transactions: {
+                total: totalTxs,
+                outgoing,
+                incoming,
+                gasUsed: gasInCELO,
+                latest: latestTransactions
+            },
+            tokens: tokenHoldings,
+            nfts: Array.from(nftHoldings.values()),
+            internalTransactions: {
+                total: internalTxs.length,
+                latest: internalTxs.slice(0, 5).map(tx => ({
+                    from: tx.from,
+                    to: tx.to,
+                    value: fromWei(tx.value),
+                    timestamp: new Date(Number(tx.timeStamp) * 1000).toISOString()
+                }))
+            },
+            accountType: isContract ? 'Contract' : 'Wallet',
+            accountStatus: {
+                isActive: totalTxs > 0,
+                firstActivity,
+                lastActivity
+            }
+        };
+
+        logger.info('[AI Tool] Account info generated:', accountInfo);
+        return accountInfo;
     },
 
     async getTokenBalances(address) {
